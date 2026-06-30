@@ -81,7 +81,21 @@ METRIC_DEFINITIONS = {
         "family": "capital_structure",
         "claim_type": "financial_metric",
         "unit": "currency",
-        "labels": ("debt amount", "loan amount", "senior loan"),
+        "labels": (
+            "debt amount",
+            "loan amount",
+            "senior loan",
+            "senior debt",
+            "loan proceeds",
+            "debt proceeds",
+            "loan funding",
+            "debt funding",
+            "debt draw",
+            "loan draw",
+            "loan balance",
+            "maximum loan",
+            "max loan",
+        ),
     },
     "equity_required": {
         "family": "capital_structure",
@@ -93,13 +107,29 @@ METRIC_DEFINITIONS = {
         "family": "debt",
         "claim_type": "ratio",
         "unit": "percent",
-        "labels": ("ltv", "loan to value", "loan-to-value"),
+        "labels": (
+            "ltv",
+            "loan to value",
+            "loan-to-value",
+            "loan / value",
+            "loan/value",
+            "original ltv",
+            "going-in ltv",
+        ),
     },
     "interest_rate": {
         "family": "debt",
         "claim_type": "ratio",
         "unit": "percent",
-        "labels": ("interest rate", "coupon", "all-in rate"),
+        "labels": (
+            "interest rate",
+            "coupon",
+            "all-in rate",
+            "all in rate",
+            "loan rate",
+            "debt rate",
+            "fixed rate",
+        ),
     },
     "levered_irr": {
         "family": "returns",
@@ -164,11 +194,11 @@ class FallbackWorkbookClaimExtractor:
         workbook = load_workbook(path, read_only=True, data_only=True)
         try:
             claims = self._claims_from_collie_v2_baseline(path, mental_model)
-            if claims:
-                return claims[:MAX_CLAIMS]
-
-            claims: list[dict[str, Any]] = []
-            seen_metrics: set[str] = set()
+            seen_metrics: set[str] = {
+                str(claim.get("metric_or_subject"))
+                for claim in claims
+                if claim.get("metric_or_subject")
+            }
             sheet_order = self._sheet_order(workbook.sheetnames, mental_model)
             wanted_families = set(mental_model.expected_metric_families)
 
@@ -266,6 +296,8 @@ class FallbackWorkbookClaimExtractor:
         normalized = label.strip().lower().replace("_", " ").replace("-", " ")
         if "hedge maturity" in normalized or "extension option" in normalized:
             return None
+        if self._looks_like_periodic_debt_activity(normalized):
+            return None
         for metric, definition in METRIC_DEFINITIONS.items():
             if definition["family"] not in wanted_families:
                 continue
@@ -276,6 +308,25 @@ class FallbackWorkbookClaimExtractor:
             if any(candidate in normalized for candidate in definition["labels"]):
                 return metric
         return None
+
+    def _looks_like_periodic_debt_activity(self, normalized_label: str) -> bool:
+        """Avoid confusing recurring debt-service rows with total loan metrics."""
+        debt_words = ("debt", "loan", "interest", "principal", "paydown")
+        activity_words = (
+            "payment",
+            "service",
+            "interest expense",
+            "interest payment",
+            "principal payment",
+            "principal paydown",
+            "amortization",
+            "repayment",
+        )
+        return (
+            any(word in normalized_label for word in debt_words)
+            and any(word in normalized_label for word in activity_words)
+            and not any(word in normalized_label for word in ("proceeds", "funding", "draw", "balance"))
+        )
 
     def _claims_from_collie_v2_baseline(
         self,
