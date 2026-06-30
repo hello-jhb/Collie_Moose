@@ -37,6 +37,11 @@ def _get_api_key() -> str | None:
     return key or os.getenv("OPENAI_API_KEY")
 
 
+def llm_available() -> bool:
+    """Return whether Moose can make GPT-backed calls in this environment."""
+    return bool(_get_api_key())
+
+
 def _get_client() -> OpenAI | None:
     global _client, _client_api_key
 

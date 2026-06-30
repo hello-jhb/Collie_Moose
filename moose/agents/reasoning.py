@@ -21,6 +21,7 @@ class ReasoningAgent:
         verified_facts: list[dict[str, Any]],
         reconciliation_notes: list[dict[str, Any]] | None = None,
         context: dict[str, Any] | None = None,
+        use_llm: bool = True,
     ) -> dict[str, Any]:
         """Return a professional readout grounded only in verified facts."""
         usable_facts = [
@@ -29,6 +30,11 @@ class ReasoningAgent:
         ]
         if len(usable_facts) != len(verified_facts):
             raise ValueError("Reasoning received unverified facts.")
+
+        if not use_llm:
+            fallback = self._deterministic_reason(question, usable_facts, reconciliation_notes or [], context or {})
+            fallback["reasoning_mode"] = "verified_facts_only_deterministic_fast"
+            return fallback
 
         try:
             return self._llm_reason(question, usable_facts, reconciliation_notes or [], context or {})

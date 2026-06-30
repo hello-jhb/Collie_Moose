@@ -17,6 +17,7 @@ from moose.intake.context_resolver import ContextResolver
 from moose.intake.file_identifier import FileIdentifier as IntakeFileIdentifier
 from moose.intake.intake_result import IntakeResult
 from moose.intake.router import Router
+from moose.llm import llm_available
 from moose.trust.reconciliation import ReconciliationEngine
 from moose.trust.verification_result import VerificationRunResult
 from moose.trust.verifier import TrustVerifier
@@ -75,7 +76,10 @@ def run_financial_model_comprehension(file_path: str | Path) -> WorkbookComprehe
     )
 
 
-def run_financial_model_claim_extraction(file_path: str | Path) -> WorkbookClaimExtractionResult:
+def run_financial_model_claim_extraction(
+    file_path: str | Path,
+    use_gpt_discovery: bool = False,
+) -> WorkbookClaimExtractionResult:
     """Run Day 4 financial model mental-model creation and claim extraction.
 
     This returns unverified claims. It does not run the Trust Engine or produce an
@@ -90,16 +94,12 @@ def run_financial_model_claim_extraction(file_path: str | Path) -> WorkbookClaim
     orientation_builder = WorkbookOrientationBuilder()
     brief_builder = ModelBriefBuilder()
     mental_model_builder = WorkbookMentalModelBuilder()
-    evidence_pack_builder = WorkbookEvidencePackBuilder()
-    discovery_agent = WorkbookClaimDiscoveryAgent()
-    grounding_validator = WorkbookClaimGroundingValidator()
     fallback_extractor = FallbackWorkbookClaimExtractor()
 
     inspection = inspector.inspect(file_path)
     orientation = orientation_builder.orient(intake, inspection)
     model_brief = brief_builder.build(intake, orientation)
     mental_model = mental_model_builder.build(intake, inspection, orientation, model_brief)
-    evidence_pack = evidence_pack_builder.build(file_path, mental_model)
 
     extraction_mode = "gpt_claim_discovery"
     claims: list[dict[str, Any]] = []
@@ -108,6 +108,13 @@ def run_financial_model_claim_extraction(file_path: str | Path) -> WorkbookClaim
     gpt_grounded_claims: list[dict[str, Any]] = []
     gpt_rejected_claims: list[dict[str, Any]] = []
     discovery_error: str | None = None
+    evidence_pack_dict: dict[str, Any] = {
+        "important_sheet_names": [],
+        "sampled_cells": {},
+        "section_header_blocks": {},
+        "candidate_neighborhoods": [],
+        "caveats": ["GPT evidence pack skipped because LLM claim discovery is unavailable."],
+    }
 
     fallback_claims = fallback_extractor.extract(
         file_path=file_path,
@@ -117,21 +124,40 @@ def run_financial_model_claim_extraction(file_path: str | Path) -> WorkbookClaim
         model_brief=model_brief,
         mental_model=mental_model,
     )
-    fallback_grounding = grounding_validator.validate(file_path, fallback_claims, evidence_pack)
-    fallback_grounded_claims = fallback_grounding.grounded_claims
-    fallback_rejected_claims = fallback_grounding.rejected_claims
 
-    try:
-        discovered_claims = discovery_agent.discover(
-            mental_model,
-            evidence_pack,
-            source_document=Path(file_path).name,
-        )
-        grounding = grounding_validator.validate(file_path, discovered_claims, evidence_pack)
-        gpt_grounded_claims = grounding.grounded_claims
-        gpt_rejected_claims = grounding.rejected_claims
-    except WorkbookClaimDiscoveryUnavailable as exc:
-        discovery_error = str(exc)
+    if not use_gpt_discovery:
+        extraction_mode = "fallback_deterministic_scaffold_fast_mode"
+        discovery_error = "GPT claim discovery skipped for fast mode."
+        fallback_grounded_claims = fallback_claims
+        fallback_rejected_claims = []
+    elif not llm_available():
+        extraction_mode = "fallback_deterministic_scaffold_llm_unavailable"
+        discovery_error = "OPENAI_API_KEY is not set in environment or Streamlit secrets."
+        fallback_grounded_claims = fallback_claims
+        fallback_rejected_claims = []
+    else:
+        evidence_pack_builder = WorkbookEvidencePackBuilder()
+        discovery_agent = WorkbookClaimDiscoveryAgent()
+        grounding_validator = WorkbookClaimGroundingValidator()
+        evidence_pack = evidence_pack_builder.build(file_path, mental_model)
+        evidence_pack_dict = evidence_pack.as_dict()
+
+        fallback_grounding = grounding_validator.validate(file_path, fallback_claims, evidence_pack)
+        fallback_grounded_claims = fallback_grounding.grounded_claims
+        fallback_rejected_claims = fallback_grounding.rejected_claims
+
+        try:
+            discovered_claims = discovery_agent.discover(
+                mental_model,
+                evidence_pack,
+                source_document=Path(file_path).name,
+            )
+            grounding = grounding_validator.validate(file_path, discovered_claims, evidence_pack)
+            gpt_grounded_claims = grounding.grounded_claims
+            gpt_rejected_claims = grounding.rejected_claims
+        except WorkbookClaimDiscoveryUnavailable as exc:
+            discovery_error = str(exc)
+            extraction_mode = "fallback_deterministic_scaffold_llm_unavailable"
         extraction_mode = "fallback_deterministic_scaffold_llm_unavailable"
 
     discovery_comparison = _claim_discovery_comparison(
@@ -158,7 +184,7 @@ def run_financial_model_claim_extraction(file_path: str | Path) -> WorkbookClaim
     diagnostics = _claim_extraction_diagnostics(
         intake=intake,
         mental_model=mental_model.as_dict(),
-        evidence_pack=evidence_pack.as_dict(),
+        evidence_pack=evidence_pack_dict,
         extraction_mode=extraction_mode,
         discovery_count=len(discovered_claims) if discovered_claims else len(fallback_claims),
         discovery_error=discovery_error,
@@ -173,7 +199,7 @@ def run_financial_model_claim_extraction(file_path: str | Path) -> WorkbookClaim
         workbook_orientation=orientation.as_dict(),
         model_brief=model_brief.as_dict(),
         mental_model=mental_model.as_dict(),
-        evidence_pack=evidence_pack.as_dict(),
+        evidence_pack=evidence_pack_dict,
         claims=claims,
         rejected_claims=rejected_claims,
         extraction_mode=extraction_mode,
@@ -182,13 +208,19 @@ def run_financial_model_claim_extraction(file_path: str | Path) -> WorkbookClaim
     )
 
 
-def run_financial_model_verification(file_path: str | Path) -> dict[str, Any]:
+def run_financial_model_verification(
+    file_path: str | Path,
+    use_gpt_discovery: bool = False,
+) -> dict[str, Any]:
     """Run Day 5 Trust Engine verification for financial model claims.
 
     This returns verified facts and reconciliation notes. It does not run reasoning or
     produce recommendations.
     """
-    claim_result = run_financial_model_claim_extraction(file_path)
+    claim_result = run_financial_model_claim_extraction(
+        file_path,
+        use_gpt_discovery=use_gpt_discovery,
+    )
     verifier = TrustVerifier()
     reconciliation_engine = ReconciliationEngine()
 
@@ -402,12 +434,17 @@ def _verification_diagnostics(
 def run_financial_model_reasoning(
     file_path: str | Path,
     question: str = "What does the verified financial model evidence show?",
+    use_gpt_discovery: bool = False,
+    use_llm_reasoning: bool = False,
 ) -> dict[str, Any]:
     """Run Day 6 reasoning from verified facts only.
 
     This is a readout, not a final investment recommendation.
     """
-    verification_run = run_financial_model_verification(file_path)
+    verification_run = run_financial_model_verification(
+        file_path,
+        use_gpt_discovery=use_gpt_discovery,
+    )
     verification = verification_run["verification"]
     verified_facts = [
         fact for fact in verification["verified_facts"]
@@ -423,6 +460,7 @@ def run_financial_model_reasoning(
             "mental_model": verification_run["claim_result"]["mental_model"],
             "verification_summary": verification["summary"],
         },
+        use_llm=use_llm_reasoning,
     )
     return {
         "verification_run": verification_run,

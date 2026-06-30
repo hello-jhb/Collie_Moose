@@ -50,23 +50,24 @@ def main() -> None:
     with st.sidebar:
         st.header("Upload")
         uploaded = st.file_uploader("Excel workbook", type=["xlsx", "xlsm", "xltx", "xltm"])
+        use_gpt = st.toggle("Use GPT deeper read", value=False)
         run_clicked = st.button("Analyze Model", type="primary", width="stretch")
         st.divider()
-        st.caption("LLM calls use OPENAI_API_KEY or Streamlit secrets. Moose reports any fallback usage clearly.")
+        st.caption("Fast mode is deterministic. GPT deeper read uses OPENAI_API_KEY when enabled.")
 
     if not run_clicked:
         _empty_state()
         return
 
     try:
-        workbook_path, display_name = _resolve_workbook(uploaded)
+        workbook_bytes, suffix, display_name = _resolve_workbook(uploaded)
     except ValueError as exc:
         st.error(str(exc))
         return
 
     with st.status("Analyzing model...", expanded=False) as status:
         try:
-            result = run_financial_model_reasoning(workbook_path)
+            result = _analyze_workbook_bytes(workbook_bytes, suffix, use_gpt)
         except Exception as exc:
             status.update(label="Analysis failed", state="error")
             st.error(f"Moose could not process this workbook: {type(exc).__name__}: {exc}")
@@ -76,13 +77,23 @@ def main() -> None:
     _render_results(display_name, result)
 
 
-def _resolve_workbook(uploaded: Any) -> tuple[Path, str]:
+def _resolve_workbook(uploaded: Any) -> tuple[bytes, str, str]:
     if uploaded is not None:
         suffix = Path(uploaded.name).suffix or ".xlsx"
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as handle:
-            handle.write(uploaded.getbuffer())
-            return Path(handle.name), uploaded.name
+        return uploaded.getvalue(), suffix, uploaded.name
     raise ValueError("Upload an Excel workbook to run Moose.")
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def _analyze_workbook_bytes(workbook_bytes: bytes, suffix: str, use_gpt: bool) -> dict[str, Any]:
+    with tempfile.NamedTemporaryFile(suffix=suffix) as handle:
+        handle.write(workbook_bytes)
+        handle.flush()
+        return run_financial_model_reasoning(
+            Path(handle.name),
+            use_gpt_discovery=use_gpt,
+            use_llm_reasoning=use_gpt,
+        )
 
 
 def _render_results(display_name: str, result: dict[str, Any]) -> None:
