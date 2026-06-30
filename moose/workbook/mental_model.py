@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from moose.intake import IntakeResult
+from moose.intake.intake_result import IntakeResult
 
 from .workbook_result import (
     ModelBriefResult,

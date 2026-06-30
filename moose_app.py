@@ -50,7 +50,7 @@ def main() -> None:
     with st.sidebar:
         st.header("Upload")
         uploaded = st.file_uploader("Excel workbook", type=["xlsx", "xlsm", "xltx", "xltm"])
-        run_clicked = st.button("Analyze Model", type="primary", use_container_width=True)
+        run_clicked = st.button("Analyze Model", type="primary", width="stretch")
         st.divider()
         st.caption("LLM calls use OPENAI_API_KEY or Streamlit secrets. Moose reports any fallback usage clearly.")
 
@@ -198,7 +198,7 @@ def _render_facts(facts: list[dict[str, Any]], claim_result: dict[str, Any]) -> 
         }
         for fact in facts
     ]
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
 def _render_caveats(verification: dict[str, Any]) -> None:
@@ -227,7 +227,7 @@ def _render_evidence(facts: list[dict[str, Any]]) -> None:
     for fact in facts:
         with st.expander(f"{fact.get('metric_or_subject')} | {fact.get('source')} | {fact.get('verification_status')}"):
             st.write("Checks")
-            st.dataframe(pd.DataFrame(fact.get("checks", [])), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(fact.get("checks", [])), width="stretch", hide_index=True)
             st.write("Caveats")
             st.write(fact.get("caveats", []))
 

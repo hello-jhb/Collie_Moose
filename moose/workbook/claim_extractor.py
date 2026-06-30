@@ -16,7 +16,7 @@ from uuid import uuid4
 
 from openpyxl import load_workbook
 
-from moose.intake import IntakeResult
+from moose.intake.intake_result import IntakeResult
 
 from .workbook_result import (
     ModelBriefResult,

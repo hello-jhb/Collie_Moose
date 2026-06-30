@@ -8,33 +8,27 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from moose.agents import (
-    ClaimExtractor,
-    FileIdentifier,
-    ModelBriefAgent,
-    ReasoningAgent,
-    WorkbookOrientationAgent,
-)
-from moose.intake import (
-    ContextResolver,
-    FileIdentifier as IntakeFileIdentifier,
-    IntakeResult,
-    Router,
-)
-from moose.trust import ReconciliationEngine, TrustVerifier, VerificationRunResult
-from moose.workbook import (
-    FallbackWorkbookClaimExtractor,
-    ModelBriefBuilder,
-    WorkbookClaimExtractionResult,
-    WorkbookClaimDiscoveryAgent,
-    WorkbookClaimDiscoveryUnavailable,
-    WorkbookComprehensionResult,
-    WorkbookEvidencePackBuilder,
-    WorkbookClaimGroundingValidator,
-    WorkbookInspector,
-    WorkbookMentalModelBuilder,
-    WorkbookOrientationBuilder,
-)
+from moose.agents.claim_extractor import ClaimExtractor
+from moose.agents.file_identifier import FileIdentifier
+from moose.agents.model_brief import ModelBriefAgent
+from moose.agents.reasoning import ReasoningAgent
+from moose.agents.workbook_orientation import WorkbookOrientationAgent
+from moose.intake.context_resolver import ContextResolver
+from moose.intake.file_identifier import FileIdentifier as IntakeFileIdentifier
+from moose.intake.intake_result import IntakeResult
+from moose.intake.router import Router
+from moose.trust.reconciliation import ReconciliationEngine
+from moose.trust.verification_result import VerificationRunResult
+from moose.trust.verifier import TrustVerifier
+from moose.workbook.claim_extractor import FallbackWorkbookClaimExtractor
+from moose.workbook.discovery_agent import WorkbookClaimDiscoveryAgent, WorkbookClaimDiscoveryUnavailable
+from moose.workbook.evidence_pack import WorkbookEvidencePackBuilder
+from moose.workbook.grounding import WorkbookClaimGroundingValidator
+from moose.workbook.mental_model import WorkbookMentalModelBuilder
+from moose.workbook.model_brief import ModelBriefBuilder
+from moose.workbook.workbook_inspector import WorkbookInspector
+from moose.workbook.workbook_orientation import WorkbookOrientationBuilder
+from moose.workbook.workbook_result import WorkbookClaimExtractionResult, WorkbookComprehensionResult
 
 
 def run_intake(file_path: str | Path) -> IntakeResult:
