@@ -288,15 +288,29 @@ class FallbackWorkbookClaimExtractor:
                 value_cell = self._nearby_value_cell(worksheet, cell.row, cell.column)
                 if not value_cell:
                     continue
-                if not self._value_plausible_for_metric(metric, value_cell.value):
-                    continue
                 definition = METRIC_DEFINITIONS[metric]
+                claim_value = self._scaled_claim_value(
+                    definition["unit"],
+                    value_cell.value,
+                    worksheet,
+                    cell.row,
+                    cell.column,
+                )
+                if not self._value_plausible_for_metric(metric, claim_value):
+                    continue
+                scale = (
+                    claim_value / value_cell.value
+                    if isinstance(value_cell.value, (int, float))
+                    and not isinstance(value_cell.value, bool)
+                    and value_cell.value
+                    else 1
+                )
                 claims.append(
                     {
                         "claim_id": f"claim:{metric}:{uuid4().hex[:8]}",
                         "claim_type": definition["claim_type"],
                         "metric_or_subject": metric,
-                        "value": value_cell.value,
+                        "value": claim_value,
                         "unit": definition["unit"],
                         "period": None,
                         "source_document": source_document,
@@ -305,6 +319,8 @@ class FallbackWorkbookClaimExtractor:
                             "cell": value_cell.coordinate,
                             "nearby_label": label.strip(),
                             "table_or_section": self._section_for_metric(metric, mental_model),
+                            "raw_cell_value": value_cell.value,
+                            "value_scale": scale,
                         },
                         "evidence": [
                             {
@@ -315,11 +331,19 @@ class FallbackWorkbookClaimExtractor:
                             }
                         ],
                         "confidence": self._confidence(worksheet.title, metric, mental_model),
+                        "metric_subtype": metric,
+                        "why_selected": (
+                            "Selected by deterministic fallback label proximity, not by "
+                            "agent interpretation."
+                        ),
+                        "alternatives_considered": [],
+                        "uncertainty": "Deterministic fallback did not perform agent ambiguity review.",
                         "reasoning": (
                             f"Found a value adjacent to label '{label.strip()}' on an expected "
                             f"source sheet for {metric}."
                         ),
-                        "extraction_method": "mental_model_guided_workbook_claim_extraction_v0",
+                        "extraction_method": "deterministic_fallback",
+                        "fallback_only": True,
                     }
                 )
         return claims
@@ -355,6 +379,50 @@ class FallbackWorkbookClaimExtractor:
         if metric == "hold_period":
             return 0 < float(value) < 50
         return True
+
+    def _scaled_claim_value(
+        self,
+        unit: str,
+        value: Any,
+        worksheet: Any,
+        label_row: int,
+        label_col: int,
+    ) -> Any:
+        if unit != "currency" or not isinstance(value, (int, float)) or isinstance(value, bool):
+            return value
+        scale = self._currency_scale_for_cell(worksheet, label_row, label_col)
+        if scale == 1:
+            return value
+        return float(value) * scale
+
+    def _currency_scale_for_cell(self, worksheet: Any, label_row: int, label_col: int) -> int:
+        """Infer common model display scales such as $000s near the cited row."""
+        nearby_text = " ".join(self._nearby_text(worksheet, label_row, label_col)).lower()
+        compact = nearby_text.replace(" ", "").replace(",", "")
+        if any(token in compact for token in ("$000", "000s", "000's", "in000", "in$000")):
+            return 1_000
+        if "thousand" in nearby_text:
+            return 1_000
+        if any(token in compact for token in ("$mm", "$m", "inmm", "in$m")):
+            return 1_000_000
+        if "million" in nearby_text:
+            return 1_000_000
+        return 1
+
+    def _nearby_text(self, worksheet: Any, row: int, col: int) -> list[str]:
+        texts: list[str] = []
+        max_col = min(worksheet.max_column or 1, SCAN_COLS)
+        for candidate_row in range(1, min(row + 1, 12)):
+            for candidate_col in range(1, max_col + 1):
+                value = worksheet.cell(candidate_row, candidate_col).value
+                if isinstance(value, str) and value.strip():
+                    texts.append(value.strip())
+        for candidate_row in range(max(1, row - 3), row + 4):
+            for candidate_col in range(max(1, col - 4), min(max_col, col + 4) + 1):
+                value = worksheet.cell(candidate_row, candidate_col).value
+                if isinstance(value, str) and value.strip():
+                    texts.append(value.strip())
+        return texts
 
     def _looks_like_periodic_debt_activity(self, normalized_label: str) -> bool:
         """Avoid confusing recurring debt-service rows with total loan metrics."""
@@ -429,6 +497,7 @@ class FallbackWorkbookClaimExtractor:
                 "period": fact.get("period"),
                 "source_document": path.name,
                 "source_location": source_location,
+                "source": source_text or None,
                 "evidence": [{
                     "quote": source_text or f"Collie v2 canonical {collie_metric}",
                     "sheet": source_location.get("sheet"),
@@ -436,11 +505,18 @@ class FallbackWorkbookClaimExtractor:
                     "row": source_location.get("row"),
                 }],
                 "confidence": self._confidence(str(source_location.get("sheet") or ""), metric, mental_model),
+                "metric_subtype": metric,
+                "why_selected": (
+                    "Selected by deterministic fallback bridge from Collie canonical truth, "
+                    "not by agent interpretation."
+                ),
+                "alternatives_considered": [],
+                "uncertainty": "Deterministic fallback bridge did not perform agent ambiguity review.",
                 "reasoning": (
                     "Recovered from Collie v2 canonical truth as a temporary Moose "
                     "baseline fallback while GPT claim discovery is stubbed."
                 ),
-                "extraction_method": "collie_v2_baseline_fallback",
+                "extraction_method": "deterministic_fallback",
                 "fallback_only": True,
             })
         return claims

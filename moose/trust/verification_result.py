@@ -16,11 +16,16 @@ class VerifiedFact:
     metric_or_subject: str
     verified_value: Any
     unit: str | None
+    metric_subtype: str | None
+    period: str | None
     source: str
     extraction_method: str | None
     fact_origin: str
     verification_status: str
     checks: list[dict[str, Any]]
+    why_selected: str | None = None
+    alternatives_considered: list[dict[str, Any]] = field(default_factory=list)
+    uncertainty: str | None = None
     caveats: list[str] = field(default_factory=list)
     notes: str | None = None
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())

@@ -9,33 +9,34 @@
     "claim_type",
     "metric_or_subject",
     "value",
+    "metric_subtype",
+    "period",
     "source_document",
     "source_location",
     "evidence",
     "confidence",
+    "why_selected",
+    "alternatives_considered",
+    "uncertainty",
     "reasoning",
     "extraction_method"
   ],
   "properties": {
-    "claim_id": {
-      "type": "string"
-    },
-    "claim_type": {
-      "type": "string"
-    },
-    "metric_or_subject": {
-      "type": "string"
-    },
+    "claim_id": {"type": "string"},
+    "claim_type": {"type": "string"},
+    "metric_or_subject": {"type": "string"},
     "value": {},
-    "unit": {
-      "type": ["string", "null"]
+    "unit": {"type": ["string", "null"]},
+    "metric_subtype": {
+      "type": ["string", "null"],
+      "description": "Analyst subtype, for example stabilized NOI, Year 1 NOI, debt proceeds, exit cap rate, levered IRR."
     },
-    "period": {
-      "type": ["string", "null"]
+    "period": {"type": ["string", "null"]},
+    "source": {
+      "type": ["string", "null"],
+      "description": "Human-readable source such as Sheet!Cell."
     },
-    "source_document": {
-      "type": "string"
-    },
+    "source_document": {"type": "string"},
     "source_location": {
       "type": "object",
       "additionalProperties": false,
@@ -44,7 +45,10 @@
         "sheet": {"type": "string"},
         "cell": {"type": "string"},
         "nearby_label": {"type": ["string", "null"]},
-        "table_or_section": {"type": ["string", "null"]}
+        "table_or_section": {"type": ["string", "null"]},
+        "nearby_context": {"type": ["string", "null"]},
+        "raw_cell_value": {},
+        "value_scale": {"type": ["number", "null"]}
       }
     },
     "evidence": {
@@ -66,12 +70,19 @@
       "minimum": 0,
       "maximum": 1
     },
-    "reasoning": {
-      "type": "string"
+    "why_selected": {"type": "string"},
+    "alternatives_considered": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
     },
+    "uncertainty": {"type": "string"},
+    "reasoning": {"type": "string"},
     "extraction_method": {
       "type": "string",
-      "description": "Examples: gpt_structured_extraction, workbook_orientation, human_entry."
+      "description": "Examples: gpt_workbook_claim_discovery_v2, deterministic_fallback, human_entry."
     }
   }
 }

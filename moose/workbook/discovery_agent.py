@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from moose.llm import LLMClient, LLMUnavailable
 
+from .reader_agents import workbook_reader_agent_bundle
 from .workbook_result import WorkbookEvidencePackResult, WorkbookMentalModelResult
 
 
@@ -41,8 +42,10 @@ class WorkbookClaimDiscoveryAgent:
         try:
             response = self.llm_client.complete_json(
                 system_prompt=(
-                    "You are the Moose Claim Discovery Agent. Agents interpret context; "
-                    "code verifies evidence. Return only grounded workbook claims as JSON."
+                    "You are Moose's agent-led workbook reading team. Python only prepares "
+                    "workbook evidence and later verifies citations. You interpret the model, "
+                    "classify metrics and subtypes, preserve ambiguity, and return only "
+                    "grounded workbook claims as JSON."
                 ),
                 user_payload=json.loads(prompt),
                 schema=schema,
@@ -61,21 +64,33 @@ class WorkbookClaimDiscoveryAgent:
         evidence_pack: WorkbookEvidencePackResult,
         source_document: str | None,
     ) -> str:
+        agent_bundle = workbook_reader_agent_bundle(mental_model, evidence_pack)
         payload = {
             "instruction": (
-                "Discover structured claims from bounded workbook evidence. "
-                "Use the mental model and evidence to decide what matters, but do not "
-                "match a fixed metric list. Every claim must cite a real source sheet "
-                "and cell from the evidence pack. Do not verify claims, reconcile "
-                "claims, produce final facts, or make investment recommendations. "
-                "If a claim cannot cite sheet/cell evidence, omit it."
+                "Discover structured claims from bounded workbook evidence. First determine "
+                "the business question, then interpret candidate metrics using the agent "
+                "guidance. Do not match a fixed Python metric list. Every claim must cite "
+                "a real source sheet and cell from the evidence pack. Do not verify claims, "
+                "reconcile claims, produce final facts, or make investment recommendations. "
+                "If a claim cannot cite sheet/cell evidence, omit it. For NOI, always "
+                "identify the NOI type and alternatives; never assume every NOI label means "
+                "the same metric."
             ),
+            "agent_guidance": agent_bundle["instructions"],
+            "agent_roles": agent_bundle["roles"],
             "output_contract": {
                 "root": "Return a JSON object with one key: claims.",
                 "claim_schema": "Each item must satisfy moose/schemas/claim.schema.json.",
                 "source_document": source_document,
                 "source_location": "Use object form with sheet, cell, nearby_label, and table_or_section when available.",
-                "extraction_method": "Use gpt_workbook_claim_discovery_v1.",
+                "required_agent_fields": [
+                    "metric_subtype",
+                    "period",
+                    "why_selected",
+                    "alternatives_considered",
+                    "uncertainty",
+                ],
+                "extraction_method": "Use gpt_workbook_claim_discovery_v2.",
             },
             "mental_model": self._compact_mental_model(mental_model),
             "important_sheets": evidence_pack.important_sheet_names,
@@ -186,12 +201,23 @@ class WorkbookClaimDiscoveryAgent:
     def _normalize_claim(self, claim: dict[str, Any], source_document: str | None) -> dict[str, Any]:
         normalized = dict(claim)
         normalized.setdefault("claim_id", f"claim:gpt:{uuid4().hex[:8]}")
-        normalized.setdefault("extraction_method", "gpt_workbook_claim_discovery_v1")
+        normalized.setdefault("extraction_method", "gpt_workbook_claim_discovery_v2")
         normalized.setdefault("confidence", 0.5)
+        normalized.setdefault("metric_subtype", None)
+        normalized.setdefault("period", None)
+        normalized.setdefault("why_selected", normalized.get("reasoning") or "")
+        normalized.setdefault("alternatives_considered", [])
+        normalized.setdefault("uncertainty", "")
         if source_document:
             normalized["source_document"] = source_document
         source_location = normalized.get("source_location")
         if isinstance(source_location, str) and "!" in source_location:
             sheet, cell = source_location.split("!", 1)
             normalized["source_location"] = {"sheet": sheet, "cell": cell}
+        if isinstance(normalized.get("source_location"), dict):
+            source_location = normalized["source_location"]
+            normalized.setdefault("source", f"{source_location.get('sheet')}!{source_location.get('cell')}")
+        else:
+            normalized.setdefault("source", None)
+        normalized.setdefault("reasoning", normalized.get("why_selected") or "")
         return normalized

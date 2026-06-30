@@ -7,10 +7,16 @@ Run: python3 test_moose_snapshot.py
 from __future__ import annotations
 
 import sys
+import tempfile
 from pathlib import Path
+from types import SimpleNamespace
+
+from openpyxl import Workbook
 
 from moose.pipeline import run_financial_model_reasoning
 from moose.snapshot import SNAPSHOT_METRICS, build_snapshot_debug
+from moose.trust.verifier import TrustVerifier
+from moose.workbook.claim_extractor import FallbackWorkbookClaimExtractor
 
 
 SAMPLE = Path("sample/BAC_vClosing.xlsx")
@@ -26,7 +32,7 @@ EXPECTED_BASELINE = {
     "exit_cap_rate",
     "sale_value",
 }
-MOOSE_NATIVE_DIRECT_METRICS = {
+DIRECT_METRICS = {
     "debt_amount",
     "loan_to_value",
     "interest_rate",
@@ -35,6 +41,12 @@ MOOSE_NATIVE_DIRECT_METRICS = {
 
 
 def main() -> int:
+    scale_failure = _check_scaled_currency_claim()
+    if scale_failure:
+        print("Moose currency scale regression failed:")
+        print(f"  [FAIL] {scale_failure}")
+        return 1
+
     if not SAMPLE.exists():
         print(f"Missing sample workbook: {SAMPLE}")
         return 1
@@ -67,20 +79,32 @@ def main() -> int:
         return 1
 
     facts = verification_run["verification"]["verified_facts"]
-    methods_by_metric = {
-        fact["metric_or_subject"]: fact.get("extraction_method")
+    facts_by_subject = {
+        fact["metric_or_subject"]: fact
         for fact in facts
-        if fact.get("metric_or_subject") in MOOSE_NATIVE_DIRECT_METRICS
+        if fact.get("metric_or_subject") in DIRECT_METRICS
     }
-    collie_first = [
+    unlabeled_fallback = [
         metric
-        for metric in sorted(MOOSE_NATIVE_DIRECT_METRICS)
-        if methods_by_metric.get(metric) == "collie_v2_baseline_fallback"
+        for metric in sorted(DIRECT_METRICS)
+        if facts_by_subject.get(metric, {}).get("fact_origin") == "fallback"
+        and facts_by_subject.get(metric, {}).get("extraction_method") != "deterministic_fallback"
     ]
-    if collie_first:
-        print("Moose native direct-assumption regression failed:")
-        for metric in collie_first:
-            print(f"  [FAIL] {metric}: still sourced from Collie baseline fallback")
+    if unlabeled_fallback:
+        print("Moose deterministic fallback labeling regression failed:")
+        for metric in unlabeled_fallback:
+            print(f"  [FAIL] {metric}: fallback fact is not labeled deterministic_fallback")
+        return 1
+
+    missing_rationale = [
+        metric
+        for metric in sorted(DIRECT_METRICS)
+        if not facts_by_subject.get(metric, {}).get("why_selected")
+    ]
+    if missing_rationale:
+        print("Moose claim rationale regression failed:")
+        for metric in missing_rationale:
+            print(f"  [FAIL] {metric}: no why_selected rationale")
         return 1
 
     reasoning = result["reasoning"]
@@ -111,6 +135,45 @@ def main() -> int:
         row = by_metric[metric]
         print(f"  [PASS] {metric} -> {row['source_sheet']}!{row['source_cell'] or 'row' + str(row['source_row'])}")
     return 0
+
+
+def _check_scaled_currency_claim() -> str | None:
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Assumptions"
+    worksheet["A1"] = "Sources and Uses ($000s)"
+    worksheet["E48"] = "Loan Amount"
+    worksheet["F48"] = 37_700
+
+    extractor = FallbackWorkbookClaimExtractor()
+    mental_model = SimpleNamespace(
+        expected_sections=["debt", "capital_structure"],
+        expected_metric_families=["debt", "capital_structure"],
+        likely_authoritative_sources={"debt_amount": ["Debt", "Sources & Uses", "Summary", "Assumptions"]},
+        important_sheets=["Assumptions"],
+        confidence=0.8,
+    )
+    claims = extractor._claims_from_sheet(
+        "scaled.xlsx",
+        worksheet,
+        {"debt", "capital_structure"},
+        mental_model,
+    )
+    debt_claim = next((claim for claim in claims if claim["metric_or_subject"] == "debt_amount"), None)
+    if not debt_claim:
+        return "Debt claim was not extracted from scaled assumption sheet."
+    if debt_claim["value"] != 37_700_000:
+        return f"Debt claim value was {debt_claim['value']}, expected 37700000."
+
+    with tempfile.NamedTemporaryFile(suffix=".xlsx") as handle:
+        workbook.save(handle.name)
+        verification = TrustVerifier().verify_claims(handle.name, [debt_claim])
+    fact = verification.verified_facts[0]
+    if fact["verification_status"] not in {"verified", "verified_with_caveat"}:
+        return f"Scaled debt claim verification status was {fact['verification_status']}."
+    if fact["verified_value"] != 37_700_000:
+        return f"Scaled debt fact value was {fact['verified_value']}, expected 37700000."
+    return None
 
 
 if __name__ == "__main__":

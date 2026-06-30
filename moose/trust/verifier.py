@@ -134,7 +134,8 @@ class TrustVerifier:
 
         checks.append(self._check("cell_exists", "passed", f"Cell exists: {sheet_name}!{cell_ref}."))
 
-        if self._values_match(source_cell.value, claim.get("value")):
+        expected_cell_value = self._claim_comparison_value(source_cell.value, source_location)
+        if self._values_match(expected_cell_value, claim.get("value")):
             checks.append(self._check("value_matches_cell", "passed", "Claim value matches cited workbook cell."))
         else:
             checks.extend([
@@ -166,6 +167,18 @@ class TrustVerifier:
 
         return self._fact(claim, status, checks, list(dict.fromkeys(caveats)), " ".join(notes) or None)
 
+    def _claim_comparison_value(self, workbook_value: Any, source_location: dict[str, Any]) -> Any:
+        scale = source_location.get("value_scale")
+        if (
+            isinstance(workbook_value, (int, float))
+            and not isinstance(workbook_value, bool)
+            and isinstance(scale, (int, float))
+            and not isinstance(scale, bool)
+            and scale not in {0, 1}
+        ):
+            return float(workbook_value) * float(scale)
+        return workbook_value
+
     def _fact(
         self,
         claim: dict[str, Any],
@@ -181,11 +194,16 @@ class TrustVerifier:
             metric_or_subject=str(claim.get("metric_or_subject", "unknown")),
             verified_value=claim.get("value") if status not in {"rejected", "contradicted"} else None,
             unit=claim.get("unit"),
+            metric_subtype=claim.get("metric_subtype"),
+            period=claim.get("period"),
             source=source,
             extraction_method=claim.get("extraction_method"),
             fact_origin="fallback" if claim.get("fallback_only") else "gpt_native",
             verification_status=status,
             checks=checks,
+            why_selected=claim.get("why_selected") or claim.get("reasoning"),
+            alternatives_considered=claim.get("alternatives_considered") or [],
+            uncertainty=claim.get("uncertainty"),
             caveats=caveats,
             notes=notes,
         )

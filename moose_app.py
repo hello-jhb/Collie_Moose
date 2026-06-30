@@ -203,11 +203,15 @@ def _render_facts(facts: list[dict[str, Any]], claim_result: dict[str, Any]) -> 
     rows = [
         {
             "metric": fact.get("metric_or_subject"),
+            "subtype": fact.get("metric_subtype"),
             "value": fact.get("verified_value"),
             "unit": fact.get("unit"),
+            "period": fact.get("period"),
             "status": fact.get("verification_status"),
             "origin": fact.get("fact_origin"),
             "source": fact.get("source"),
+            "why selected": fact.get("why_selected"),
+            "uncertainty": fact.get("uncertainty"),
             "caveat": "; ".join(fact.get("caveats", [])[:2]),
         }
         for fact in facts
@@ -247,6 +251,16 @@ def _render_evidence(facts: list[dict[str, Any]]) -> None:
         with st.expander(f"{fact.get('metric_or_subject')} | {fact.get('source')} | {fact.get('verification_status')}"):
             st.write("Checks")
             st.dataframe(pd.DataFrame(fact.get("checks", [])), width="stretch", hide_index=True)
+            st.write("Why Moose selected this")
+            st.write(fact.get("why_selected") or "No agent selection rationale provided.")
+            st.write("Alternatives considered")
+            alternatives = fact.get("alternatives_considered") or []
+            if alternatives:
+                st.dataframe(pd.DataFrame(alternatives), width="stretch", hide_index=True)
+            else:
+                st.write("No alternatives recorded.")
+            st.write("Uncertainty")
+            st.write(fact.get("uncertainty") or "No uncertainty recorded.")
             st.write("Caveats")
             st.write(fact.get("caveats", []))
 
@@ -306,6 +320,7 @@ def _snapshot_card(label: str, fact: dict[str, Any] | None, debug_row: dict[str,
           <span>{escape(label)}</span>
           <strong>{escape(_format_fact_value(fact))}</strong>
           <small>{_status_badge(str(fact.get("verification_status")))} {escape(str(fact.get("source", "unknown")))}</small>
+          <small>{escape(str(fact.get("why_selected") or ""))}</small>
         </div>
         """,
         unsafe_allow_html=True,
