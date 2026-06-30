@@ -145,7 +145,7 @@ class WorkbookClaimGroundingValidator:
     def _label_near_cell(self, worksheet: Any, row: int, col: int, label: str) -> bool:
         label_normalized = label.strip().lower()
         for candidate_row in range(max(1, row - 1), row + 2):
-            for candidate_col in range(max(1, col - 2), col + 1):
+            for candidate_col in range(max(1, col - 8), col + 1):
                 value = worksheet.cell(candidate_row, candidate_col).value
                 if isinstance(value, str) and value.strip().lower() == label_normalized:
                     return True

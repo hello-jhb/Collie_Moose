@@ -129,6 +129,8 @@ METRIC_DEFINITIONS = {
             "loan rate",
             "debt rate",
             "fixed rate",
+            "annual interest",
+            "annual interests",
         ),
     },
     "levered_irr": {
@@ -258,6 +260,8 @@ class FallbackWorkbookClaimExtractor:
                 value_cell = self._nearby_value_cell(worksheet, cell.row, cell.column)
                 if not value_cell:
                     continue
+                if not self._value_plausible_for_metric(metric, value_cell.value):
+                    continue
                 definition = METRIC_DEFINITIONS[metric]
                 claims.append(
                     {
@@ -308,6 +312,21 @@ class FallbackWorkbookClaimExtractor:
             if any(candidate in normalized for candidate in definition["labels"]):
                 return metric
         return None
+
+    def _value_plausible_for_metric(self, metric: str, value: Any) -> bool:
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return False
+        if metric in {"loan_to_value", "interest_rate", "exit_cap_rate"}:
+            return 0 < float(value) < 1
+        if metric in {"purchase_price", "total_project_cost", "debt_amount", "equity_required", "sale_value", "stabilized_noi"}:
+            return abs(float(value)) >= 1_000
+        if metric in {"levered_irr", "unlevered_irr"}:
+            return -1 < float(value) < 2
+        if metric in {"equity_multiple", "unlevered_equity_multiple"}:
+            return 0 < float(value) < 20
+        if metric == "hold_period":
+            return 0 < float(value) < 50
+        return True
 
     def _looks_like_periodic_debt_activity(self, normalized_label: str) -> bool:
         """Avoid confusing recurring debt-service rows with total loan metrics."""
@@ -414,12 +433,12 @@ class FallbackWorkbookClaimExtractor:
         return {"sheet": sheet_name, "cell": ref}
 
     def _nearby_value_cell(self, worksheet: Any, row: int, col: int) -> Any | None:
-        candidates = [
-            (row, col + 1),
-            (row, col + 2),
+        candidates = [(row, candidate_col) for candidate_col in range(col + 1, col + 9)]
+        candidates.extend([
             (row + 1, col),
             (row + 1, col + 1),
-        ]
+            (row + 1, col + 2),
+        ])
         for candidate_row, candidate_col in candidates:
             value = worksheet.cell(candidate_row, candidate_col).value
             if isinstance(value, (int, float)) and not isinstance(value, bool):
