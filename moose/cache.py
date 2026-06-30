@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 
-CACHE_VERSION = "moose_pipeline_v3"
+CACHE_VERSION = "moose_pipeline_v6"
 CACHE_DIR = Path("cache/moose")
 
 T = TypeVar("T")

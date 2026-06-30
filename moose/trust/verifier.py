@@ -267,7 +267,7 @@ class TrustVerifier:
     def _label_near_cell(self, worksheet: Any, row: int, col: int, label: str) -> bool:
         normalized = label.strip().lower()
         for candidate_row in range(max(1, row - 2), row + 3):
-            for candidate_col in range(max(1, col - 3), col + 2):
+            for candidate_col in range(max(1, col - 8), col + 2):
                 value = worksheet.cell(candidate_row, candidate_col).value
                 if isinstance(value, str) and value.strip().lower() == normalized:
                     return True

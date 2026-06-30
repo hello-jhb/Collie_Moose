@@ -30,6 +30,14 @@ MAX_CLAIMS = 20
 SCAN_ROWS = 160
 SCAN_COLS = 80
 
+MOOSE_NATIVE_FIRST_METRICS = {
+    "debt_amount",
+    "loan_to_value",
+    "interest_rate",
+    "exit_cap_rate",
+    "sale_value",
+}
+
 COLLIE_BASELINE_METRICS = {
     "purchase_price",
     "total_cost",
@@ -195,14 +203,34 @@ class FallbackWorkbookClaimExtractor:
         path = Path(file_path)
         workbook = load_workbook(path, read_only=True, data_only=True)
         try:
-            claims = self._claims_from_collie_v2_baseline(path, mental_model)
-            seen_metrics: set[str] = {
-                str(claim.get("metric_or_subject"))
-                for claim in claims
-                if claim.get("metric_or_subject")
-            }
             sheet_order = self._sheet_order(workbook.sheetnames, mental_model)
             wanted_families = set(mental_model.expected_metric_families)
+            claims: list[dict[str, Any]] = []
+            seen_metrics: set[str] = set()
+
+            for sheet_name in sheet_order:
+                worksheet = workbook[sheet_name]
+                for claim in self._claims_from_sheet(path.name, worksheet, wanted_families, mental_model):
+                    metric = claim["metric_or_subject"]
+                    if metric not in MOOSE_NATIVE_FIRST_METRICS:
+                        continue
+                    if metric in seen_metrics:
+                        continue
+                    claims.append(claim)
+                    seen_metrics.add(metric)
+                    if MOOSE_NATIVE_FIRST_METRICS.issubset(seen_metrics):
+                        break
+                if MOOSE_NATIVE_FIRST_METRICS.issubset(seen_metrics):
+                    break
+
+            for claim in self._claims_from_collie_v2_baseline(path, mental_model):
+                metric = str(claim.get("metric_or_subject"))
+                if not metric or metric in seen_metrics:
+                    continue
+                claims.append(claim)
+                seen_metrics.add(metric)
+                if len(claims) >= MAX_CLAIMS:
+                    return claims
 
             for sheet_name in sheet_order:
                 worksheet = workbook[sheet_name]

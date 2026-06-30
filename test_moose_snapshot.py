@@ -26,6 +26,12 @@ EXPECTED_BASELINE = {
     "exit_cap_rate",
     "sale_value",
 }
+MOOSE_NATIVE_DIRECT_METRICS = {
+    "debt_amount",
+    "loan_to_value",
+    "interest_rate",
+    "exit_cap_rate",
+}
 
 
 def main() -> int:
@@ -58,6 +64,23 @@ def main() -> int:
         print("Moose snapshot regression failed:")
         for failure in failures:
             print(f"  [FAIL] {failure}")
+        return 1
+
+    facts = verification_run["verification"]["verified_facts"]
+    methods_by_metric = {
+        fact["metric_or_subject"]: fact.get("extraction_method")
+        for fact in facts
+        if fact.get("metric_or_subject") in MOOSE_NATIVE_DIRECT_METRICS
+    }
+    collie_first = [
+        metric
+        for metric in sorted(MOOSE_NATIVE_DIRECT_METRICS)
+        if methods_by_metric.get(metric) == "collie_v2_baseline_fallback"
+    ]
+    if collie_first:
+        print("Moose native direct-assumption regression failed:")
+        for metric in collie_first:
+            print(f"  [FAIL] {metric}: still sourced from Collie baseline fallback")
         return 1
 
     print("ALL PASS")
