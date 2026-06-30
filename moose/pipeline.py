@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from moose.cache import cached_stage, file_sha256, load_stage, save_stage, timed
 from moose.agents.claim_extractor import ClaimExtractor
 from moose.agents.file_identifier import FileIdentifier
 from moose.agents.model_brief import ModelBriefAgent
@@ -29,7 +30,13 @@ from moose.workbook.mental_model import WorkbookMentalModelBuilder
 from moose.workbook.model_brief import ModelBriefBuilder
 from moose.workbook.workbook_inspector import WorkbookInspector
 from moose.workbook.workbook_orientation import WorkbookOrientationBuilder
-from moose.workbook.workbook_result import WorkbookClaimExtractionResult, WorkbookComprehensionResult
+from moose.workbook.workbook_result import (
+    ClaimGroundingResult,
+    WorkbookClaimExtractionResult,
+    WorkbookComprehensionResult,
+    WorkbookEvidencePackResult,
+    WorkbookInspectionResult,
+)
 
 
 def run_intake(file_path: str | Path) -> IntakeResult:
@@ -85,7 +92,21 @@ def run_financial_model_claim_extraction(
     This returns unverified claims. It does not run the Trust Engine or produce an
     investment recommendation.
     """
-    intake = run_intake(file_path)
+    file_hash = file_sha256(file_path)
+    extraction_options = {"use_gpt_discovery": use_gpt_discovery}
+    cached = load_stage(file_hash, "claim_extraction_result", extraction_options)
+    if cached is not None:
+        result = dict(cached["payload"])
+        diagnostics = dict(result.get("diagnostics") or {})
+        timings = dict(diagnostics.get("timings") or {})
+        timings["claim_extraction_result"] = {"seconds": 0.0, "cache": "hit"}
+        diagnostics["timings"] = timings
+        result["diagnostics"] = diagnostics
+        return WorkbookClaimExtractionResult(**result)
+
+    timings: dict[str, dict[str, Any]] = {}
+
+    intake = timed("intake", timings, lambda: run_intake(file_path))
     route = intake.route.get("pipeline_name")
     if route != "financial_model_pipeline":
         raise ValueError(f"Expected financial_model_pipeline, got {route}.")
@@ -96,10 +117,21 @@ def run_financial_model_claim_extraction(
     mental_model_builder = WorkbookMentalModelBuilder()
     fallback_extractor = FallbackWorkbookClaimExtractor()
 
-    inspection = inspector.inspect(file_path)
-    orientation = orientation_builder.orient(intake, inspection)
-    model_brief = brief_builder.build(intake, orientation)
-    mental_model = mental_model_builder.build(intake, inspection, orientation, model_brief)
+    inspection_dict = cached_stage(
+        file_hash,
+        "workbook_inspection",
+        {},
+        timings,
+        lambda: inspector.inspect(file_path).as_dict(),
+    )
+    inspection = WorkbookInspectionResult(**inspection_dict)
+    orientation = timed("workbook_orientation", timings, lambda: orientation_builder.orient(intake, inspection))
+    model_brief = timed("model_brief", timings, lambda: brief_builder.build(intake, orientation))
+    mental_model = timed(
+        "mental_model",
+        timings,
+        lambda: mental_model_builder.build(intake, inspection, orientation, model_brief),
+    )
 
     extraction_mode = "gpt_claim_discovery"
     claims: list[dict[str, Any]] = []
@@ -116,13 +148,19 @@ def run_financial_model_claim_extraction(
         "caveats": ["GPT evidence pack skipped because LLM claim discovery is unavailable."],
     }
 
-    fallback_claims = fallback_extractor.extract(
-        file_path=file_path,
-        intake_result=intake,
-        inspection=inspection,
-        orientation=orientation,
-        model_brief=model_brief,
-        mental_model=mental_model,
+    fallback_claims = cached_stage(
+        file_hash,
+        "claim_extraction",
+        {"mode": "fallback", "use_gpt_discovery": use_gpt_discovery},
+        timings,
+        lambda: fallback_extractor.extract(
+            file_path=file_path,
+            intake_result=intake,
+            inspection=inspection,
+            orientation=orientation,
+            model_brief=model_brief,
+            mental_model=mental_model,
+        ),
     )
 
     if not use_gpt_discovery:
@@ -139,26 +177,49 @@ def run_financial_model_claim_extraction(
         evidence_pack_builder = WorkbookEvidencePackBuilder()
         discovery_agent = WorkbookClaimDiscoveryAgent()
         grounding_validator = WorkbookClaimGroundingValidator()
-        evidence_pack = evidence_pack_builder.build(file_path, mental_model)
-        evidence_pack_dict = evidence_pack.as_dict()
+        evidence_pack_dict = cached_stage(
+            file_hash,
+            "evidence_pack",
+            {"use_gpt_discovery": use_gpt_discovery},
+            timings,
+            lambda: evidence_pack_builder.build(file_path, mental_model).as_dict(),
+        )
+        evidence_pack = WorkbookEvidencePackResult(**evidence_pack_dict)
 
-        fallback_grounding = grounding_validator.validate(file_path, fallback_claims, evidence_pack)
+        fallback_grounding_dict = cached_stage(
+            file_hash,
+            "grounding",
+            {"claim_source": "fallback", "use_gpt_discovery": use_gpt_discovery},
+            timings,
+            lambda: grounding_validator.validate(file_path, fallback_claims, evidence_pack).as_dict(),
+        )
+        fallback_grounding = ClaimGroundingResult(**fallback_grounding_dict)
         fallback_grounded_claims = fallback_grounding.grounded_claims
         fallback_rejected_claims = fallback_grounding.rejected_claims
 
         try:
-            discovered_claims = discovery_agent.discover(
-                mental_model,
-                evidence_pack,
-                source_document=Path(file_path).name,
+            discovered_claims = timed(
+                "gpt_claim_discovery",
+                timings,
+                lambda: discovery_agent.discover(
+                    mental_model,
+                    evidence_pack,
+                    source_document=Path(file_path).name,
+                ),
             )
-            grounding = grounding_validator.validate(file_path, discovered_claims, evidence_pack)
+            grounding_dict = cached_stage(
+                file_hash,
+                "grounding",
+                {"claim_source": "gpt", "use_gpt_discovery": use_gpt_discovery},
+                timings,
+                lambda: grounding_validator.validate(file_path, discovered_claims, evidence_pack).as_dict(),
+            )
+            grounding = ClaimGroundingResult(**grounding_dict)
             gpt_grounded_claims = grounding.grounded_claims
             gpt_rejected_claims = grounding.rejected_claims
         except WorkbookClaimDiscoveryUnavailable as exc:
             discovery_error = str(exc)
             extraction_mode = "fallback_deterministic_scaffold_llm_unavailable"
-        extraction_mode = "fallback_deterministic_scaffold_llm_unavailable"
 
     discovery_comparison = _claim_discovery_comparison(
         gpt_claims=gpt_grounded_claims,
@@ -192,8 +253,9 @@ def run_financial_model_claim_extraction(
         rejected_claims=rejected_claims,
         discovery_comparison=discovery_comparison,
     )
+    diagnostics["timings"] = timings
 
-    return WorkbookClaimExtractionResult(
+    result = WorkbookClaimExtractionResult(
         intake_result=intake.as_dict(),
         workbook_inspection=inspection.as_dict(),
         workbook_orientation=orientation.as_dict(),
@@ -206,6 +268,13 @@ def run_financial_model_claim_extraction(
         diagnostics=diagnostics,
         discovery_comparison=discovery_comparison,
     )
+    save_stage(
+        file_hash,
+        "claim_extraction_result",
+        result.as_dict(),
+        extraction_options,
+    )
+    return result
 
 
 def run_financial_model_verification(
@@ -217,19 +286,44 @@ def run_financial_model_verification(
     This returns verified facts and reconciliation notes. It does not run reasoning or
     produce recommendations.
     """
+    file_hash = file_sha256(file_path)
+    verification_options = {"use_gpt_discovery": use_gpt_discovery}
+    cached = load_stage(file_hash, "verification", verification_options)
+    if cached is not None:
+        result = dict(cached["payload"])
+        diagnostics = dict(result.get("diagnostics") or {})
+        timings = dict(diagnostics.get("timings") or {})
+        timings["verification_result"] = {"seconds": 0.0, "cache": "hit"}
+        diagnostics["timings"] = timings
+        result["diagnostics"] = diagnostics
+        return result
+
+    timings: dict[str, dict[str, Any]] = {}
     claim_result = run_financial_model_claim_extraction(
         file_path,
         use_gpt_discovery=use_gpt_discovery,
     )
+    timings["claim_extraction_result"] = (
+        (claim_result.diagnostics or {}).get("timings", {}).get("claim_extraction_result")
+        or {"seconds": None, "cache": "miss"}
+    )
     verifier = TrustVerifier()
     reconciliation_engine = ReconciliationEngine()
 
-    verification_result: VerificationRunResult = verifier.verify_claims(
-        file_path=file_path,
-        claims=claim_result.claims,
-        mental_model=claim_result.mental_model,
+    verification_result: VerificationRunResult = timed(
+        "verification",
+        timings,
+        lambda: verifier.verify_claims(
+            file_path=file_path,
+            claims=claim_result.claims,
+            mental_model=claim_result.mental_model,
+        ),
     )
-    reconciliation_notes = reconciliation_engine.reconcile(verification_result.verified_facts)
+    reconciliation_notes = timed(
+        "reconciliation",
+        timings,
+        lambda: reconciliation_engine.reconcile(verification_result.verified_facts),
+    )
     verification_result.reconciliation_notes.extend(reconciliation_notes)
 
     result = {
@@ -241,6 +335,11 @@ def run_financial_model_verification(
         verification_summary=verification_result.summary,
         reconciliation_notes=reconciliation_notes,
     )
+    result["diagnostics"]["timings"] = {
+        **((claim_result.diagnostics or {}).get("timings", {})),
+        **timings,
+    }
+    save_stage(file_hash, "verification", result, verification_options)
     return result
 
 
@@ -441,9 +540,32 @@ def run_financial_model_reasoning(
 
     This is a readout, not a final investment recommendation.
     """
-    verification_run = run_financial_model_verification(
-        file_path,
-        use_gpt_discovery=use_gpt_discovery,
+    file_hash = file_sha256(file_path)
+    reasoning_options = {
+        "use_gpt_discovery": use_gpt_discovery,
+        "use_llm_reasoning": use_llm_reasoning,
+        "question": question,
+    }
+    cached = load_stage(file_hash, "reasoning", reasoning_options)
+    if cached is not None:
+        result = dict(cached["payload"])
+        verification_run = dict(result.get("verification_run") or {})
+        diagnostics = dict(verification_run.get("diagnostics") or {})
+        timings = dict(diagnostics.get("timings") or {})
+        timings["reasoning_result"] = {"seconds": 0.0, "cache": "hit"}
+        diagnostics["timings"] = timings
+        verification_run["diagnostics"] = diagnostics
+        result["verification_run"] = verification_run
+        return result
+
+    timings: dict[str, dict[str, Any]] = {}
+    verification_run = timed(
+        "verification_result",
+        timings,
+        lambda: run_financial_model_verification(
+            file_path,
+            use_gpt_discovery=use_gpt_discovery,
+        ),
     )
     verification = verification_run["verification"]
     verified_facts = [
@@ -451,21 +573,33 @@ def run_financial_model_reasoning(
         if fact.get("verification_status") in {"verified", "verified_with_caveat"}
     ]
     reasoning_agent = ReasoningAgent()
-    reasoning = reasoning_agent.reason(
-        question=question,
-        verified_facts=verified_facts,
-        reconciliation_notes=verification.get("reconciliation_notes", []),
-        context={
-            "document_identity": verification_run["claim_result"]["intake_result"]["document_identity"],
-            "mental_model": verification_run["claim_result"]["mental_model"],
-            "verification_summary": verification["summary"],
-        },
-        use_llm=use_llm_reasoning,
+    reasoning = timed(
+        "reasoning",
+        timings,
+        lambda: reasoning_agent.reason(
+            question=question,
+            verified_facts=verified_facts,
+            reconciliation_notes=verification.get("reconciliation_notes", []),
+            context={
+                "document_identity": verification_run["claim_result"]["intake_result"]["document_identity"],
+                "mental_model": verification_run["claim_result"]["mental_model"],
+                "verification_summary": verification["summary"],
+            },
+            use_llm=use_llm_reasoning,
+        ),
     )
-    return {
+    diagnostics = dict(verification_run.get("diagnostics") or {})
+    diagnostics["timings"] = {
+        **diagnostics.get("timings", {}),
+        **timings,
+    }
+    verification_run["diagnostics"] = diagnostics
+    result = {
         "verification_run": verification_run,
         "reasoning": reasoning,
     }
+    save_stage(file_hash, "reasoning", result, reasoning_options)
+    return result
 
 
 class MoosePipeline:

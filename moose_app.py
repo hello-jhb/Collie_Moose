@@ -15,21 +15,7 @@ import pandas as pd
 import streamlit as st
 
 from moose.pipeline import run_financial_model_reasoning
-
-
-SNAPSHOT_METRICS = [
-    ("purchase_price", "Purchase Price"),
-    ("total_project_cost", "Total Project Cost"),
-    ("debt_amount", "Debt"),
-    ("equity_required", "Equity"),
-    ("loan_to_value", "LTV"),
-    ("interest_rate", "Interest Rate"),
-    ("stabilized_noi", "NOI"),
-    ("levered_irr", "Levered IRR"),
-    ("equity_multiple", "Equity Multiple"),
-    ("exit_cap_rate", "Exit Cap"),
-    ("sale_value", "Sale Value"),
-]
+from moose.snapshot import SNAPSHOT_METRICS, build_snapshot_debug, facts_by_metric
 
 READ_SECTIONS = [
     "Capital Structure",
@@ -55,6 +41,13 @@ def main() -> None:
         st.divider()
         st.caption("Fast mode is deterministic. GPT deeper read uses OPENAI_API_KEY when enabled.")
 
+    if not run_clicked and "analysis_result" in st.session_state:
+        _render_results(
+            st.session_state.get("analysis_display_name", "Workbook"),
+            st.session_state["analysis_result"],
+        )
+        return
+
     if not run_clicked:
         _empty_state()
         return
@@ -70,10 +63,14 @@ def main() -> None:
             result = _analyze_workbook_bytes(workbook_bytes, suffix, use_gpt)
         except Exception as exc:
             status.update(label="Analysis failed", state="error")
-            st.error(f"Moose could not process this workbook: {type(exc).__name__}: {exc}")
+            st.error("Moose could not process this workbook. Try a smaller model or disable GPT deeper read.")
+            with st.expander("Error details"):
+                st.code(f"{type(exc).__name__}: {exc}")
             return
         status.update(label="Analysis complete", state="complete")
 
+    st.session_state["analysis_result"] = result
+    st.session_state["analysis_display_name"] = display_name
     _render_results(display_name, result)
 
 
@@ -114,10 +111,12 @@ def _render_results(display_name: str, result: dict[str, Any]) -> None:
         facts=facts,
         claim_result=claim_result,
     )
-    _render_deal_snapshot(facts)
+    snapshot_debug = build_snapshot_debug(SNAPSHOT_METRICS, claim_result, verification)
+    _render_deal_snapshot(facts, snapshot_debug)
     _render_investment_read(reasoning, facts)
     _render_facts(facts, claim_result)
     _render_caveats(verification)
+    _render_snapshot_debug(snapshot_debug)
     _render_diagnostics(claim_result, verification_run, reasoning)
 
 
@@ -158,15 +157,19 @@ def _render_top_summary(
         st.caption(f"Extraction mode: {claim_result.get('extraction_mode')}")
 
 
-def _render_deal_snapshot(facts: list[dict[str, Any]]) -> None:
+def _render_deal_snapshot(facts: list[dict[str, Any]], snapshot_debug: list[dict[str, Any]]) -> None:
     st.subheader("Deal Snapshot")
-    facts_by_metric = _facts_by_metric(facts)
+    fact_map = facts_by_metric(facts)
+    debug_by_metric = {
+        row["expected_metric_key"]: row
+        for row in snapshot_debug
+    }
     for row_start in range(0, len(SNAPSHOT_METRICS), 4):
         cols = st.columns(4)
         for col, (metric, label) in zip(cols, SNAPSHOT_METRICS[row_start:row_start + 4]):
-            fact = facts_by_metric.get(metric)
+            fact = fact_map.get(metric)
             with col:
-                _snapshot_card(label, fact)
+                _snapshot_card(label, fact, debug_by_metric.get(metric))
 
 
 def _render_investment_read(reasoning: dict[str, Any], facts: list[dict[str, Any]]) -> None:
@@ -212,6 +215,11 @@ def _render_facts(facts: list[dict[str, Any]], claim_result: dict[str, Any]) -> 
     st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
+def _render_snapshot_debug(snapshot_debug: list[dict[str, Any]]) -> None:
+    with st.expander("Deal Snapshot Debug Report"):
+        st.dataframe(pd.DataFrame(snapshot_debug), width="stretch", hide_index=True)
+
+
 def _render_caveats(verification: dict[str, Any]) -> None:
     st.subheader("Caveats / Trust")
     summary = verification.get("summary", {})
@@ -246,6 +254,8 @@ def _render_evidence(facts: list[dict[str, Any]]) -> None:
 def _render_diagnostics(claim_result: dict[str, Any], verification_run: dict[str, Any], reasoning: dict[str, Any]) -> None:
     st.subheader("Diagnostics")
     diagnostics = verification_run.get("diagnostics", {})
+    with st.expander("Timings"):
+        st.json(diagnostics.get("timings", {}))
     with st.expander("Intake"):
         st.json(claim_result.get("intake_result", {}))
     with st.expander("Mental Model"):
@@ -276,14 +286,15 @@ def _empty_state() -> None:
     st.info("Upload an Excel workbook to analyze the model.")
 
 
-def _snapshot_card(label: str, fact: dict[str, Any] | None) -> None:
+def _snapshot_card(label: str, fact: dict[str, Any] | None, debug_row: dict[str, Any] | None = None) -> None:
     if not fact:
+        missing_reason = (debug_row or {}).get("missing_reason") or "No verified source yet"
         st.markdown(
             f"""
             <div class='metric-card missing'>
               <span>{escape(label)}</span>
               <strong>Not found</strong>
-              <small>No verified source yet</small>
+              <small>{escape(str(missing_reason))}</small>
             </div>
             """,
             unsafe_allow_html=True,
@@ -299,14 +310,6 @@ def _snapshot_card(label: str, fact: dict[str, Any] | None) -> None:
         """,
         unsafe_allow_html=True,
     )
-
-
-def _facts_by_metric(facts: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    return {
-        str(fact.get("metric_or_subject")): fact
-        for fact in facts
-        if fact.get("metric_or_subject") and fact.get("verification_status") in {"verified", "verified_with_caveat"}
-    }
 
 
 def _format_fact_value(fact: dict[str, Any]) -> str:
@@ -333,7 +336,7 @@ def _fallback_answer_summary(facts: list[dict[str, Any]]) -> str:
 
 
 def _fallback_read_sections(facts: list[dict[str, Any]]) -> dict[str, str]:
-    fact_map = _facts_by_metric(facts)
+    fact_map = facts_by_metric(facts)
 
     def line(metric: str, label: str) -> str:
         fact = fact_map.get(metric)
