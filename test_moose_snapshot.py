@@ -83,6 +83,29 @@ def main() -> int:
             print(f"  [FAIL] {metric}: still sourced from Collie baseline fallback")
         return 1
 
+    reasoning = result["reasoning"]
+    readout_text = " ".join([
+        str(reasoning.get("answer_summary", "")),
+        " ".join(str(value) for value in reasoning.get("sections", {}).values()),
+    ])
+    bad_fragments = [" percent from", " currency from", " multiple from"]
+    bad_units = [fragment for fragment in bad_fragments if fragment in readout_text]
+    if bad_units:
+        print("Moose readout unit-format regression failed:")
+        for fragment in bad_units:
+            print(f"  [FAIL] raw unit phrase still present: {fragment!r}")
+        return 1
+    expected_display_fragments = ["$", "%", "x"]
+    missing_display = [
+        fragment for fragment in expected_display_fragments
+        if fragment not in readout_text
+    ]
+    if missing_display:
+        print("Moose readout display-format regression failed:")
+        for fragment in missing_display:
+            print(f"  [FAIL] formatted fragment missing: {fragment!r}")
+        return 1
+
     print("ALL PASS")
     for metric in sorted(EXPECTED_BASELINE):
         row = by_metric[metric]

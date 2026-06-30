@@ -132,11 +132,15 @@ class ReasoningAgent:
                 "You are the Moose Investment Reasoning Agent. Reason only from the "
                 "provided verified or caveated facts. Cite fact ids implicitly by listing "
                 "supporting_fact_ids. Do not add market claims, recommendations, or facts "
-                "that are not in the payload."
+                "that are not in the payload. Use display_value for prose, not raw "
+                "verified_value."
             ),
             user_payload={
                 "question": question,
-                "verified_or_caveated_facts": usable_facts,
+                "verified_or_caveated_facts": [
+                    self._fact_for_reasoning_payload(fact)
+                    for fact in usable_facts
+                ],
                 "reconciliation_notes": reconciliation_notes,
                 "context": context,
                 "required_sections": [
@@ -160,6 +164,11 @@ class ReasoningAgent:
         response["reconciliation_notes"] = reconciliation_notes
         response["context"] = context
         return response
+
+    def _fact_for_reasoning_payload(self, fact: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(fact)
+        payload["display_value"] = self._format_fact_value(fact)
+        return payload
 
     def _observations(self, facts: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
         observations: list[dict[str, Any]] = []
@@ -230,10 +239,32 @@ class ReasoningAgent:
             "statement": statement,
             "metric_or_subject": metric,
             "value": fact.get("verified_value"),
+            "display_value": self._format_fact_value(fact),
             "unit": fact.get("unit"),
             "source": fact.get("source"),
             "fact_id": fact.get("fact_id"),
         })
+
+    def _format_fact_value(self, fact: dict[str, Any]) -> str:
+        value = fact.get("verified_value")
+        unit = fact.get("unit")
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return str(value)
+        if unit == "currency":
+            return f"${value:,.0f}"
+        if unit == "percent":
+            return f"{value:.2%}" if abs(value) <= 1 else f"{value:.2f}%"
+        if unit == "multiple":
+            return f"{value:.2f}x"
+        if unit == "years":
+            return f"{value:,.1f} years"
+        return f"{value:,.2f}"
+
+    def _format_fact_with_source(self, fact: dict[str, Any]) -> str:
+        source = fact.get("source")
+        if source:
+            return f"{self._format_fact_value(fact)} from {source}"
+        return self._format_fact_value(fact)
 
     def _summary(
         self,
@@ -243,14 +274,17 @@ class ReasoningAgent:
     ) -> str:
         if not observations:
             return "Moose has no verified facts available for reasoning yet."
-        basis = facts.get("total_project_cost", {}).get("verified_value")
-        debt = facts.get("debt_amount", {}).get("verified_value")
-        levered_irr = facts.get("levered_irr", {}).get("verified_value")
+        basis = facts.get("total_project_cost")
+        debt = facts.get("debt_amount")
+        levered_irr = facts.get("levered_irr")
         pieces = ["Moose can provide a preliminary readout from verified facts only."]
-        if basis is not None and debt is not None:
-            pieces.append(f"Verified basis is {basis} and verified debt is {debt}.")
-        if levered_irr is not None:
-            pieces.append(f"Verified levered IRR is {levered_irr}.")
+        if basis and debt:
+            pieces.append(
+                f"Verified basis is {self._format_fact_value(basis)} and "
+                f"verified debt is {self._format_fact_value(debt)}."
+            )
+        if levered_irr:
+            pieces.append(f"Verified levered IRR is {self._format_fact_value(levered_irr)}.")
         if caveats:
             pieces.append("Some caveats remain and should be resolved before final recommendation.")
         return " ".join(pieces)
@@ -264,7 +298,7 @@ class ReasoningAgent:
             fact = facts.get(metric)
             if not fact:
                 return f"No verified fact is available for {label}."
-            return f"{label}: {fact.get('verified_value')} {fact.get('unit') or ''} from {fact.get('source')}."
+            return f"{label}: {self._format_fact_with_source(fact)}."
 
         return {
             "Deal Snapshot": sentence("total_project_cost", "Total project cost"),
